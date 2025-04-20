@@ -1,39 +1,34 @@
 import streamlit as st
-from azure.core.credentials import AzureKeyCredential
-from azure.search.documents import SearchClient
 import os
-from collections import Counter
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from collections import Counter, defaultdict
 import pandas as pd
-from collections import defaultdict
 import altair as alt
 from duckduckgo_search import DDGS
 import time
 import random
+from datetime import datetime
 
 # =====================
-# Azure Search Settings
+# Database Settings
 # =====================
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
-SEARCH_SERVICE_NAME = os.getenv("SEARCH_SERVICE_NAME")
-SEARCH_INDEX_NAME = os.getenv("SEARCH_INDEX_NAME")
-SEARCH_API_KEY = os.getenv("SEARCH_API_KEY")
-
-# Create Azure Search Client
-endpoint = f"https://{SEARCH_SERVICE_NAME}.search.windows.net"
-search_client = SearchClient(
-    endpoint=endpoint,
-    index_name=SEARCH_INDEX_NAME,
-    credential=AzureKeyCredential(SEARCH_API_KEY)
-)
-
-# =====================
-# Streamlit Page Config
-# =====================
-st.set_page_config(page_title="Kommunale Mødeudtræk", layout="wide")
-st.title("🔍 Kommunale Mødeudtræk")
-
-# Opret faner til navigation
-tab1, tab2 = st.tabs(["Søg i kommunale møder", "Populære emner"])
+def get_db_connection():
+    """Create database connection"""
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        cursor_factory=RealDictCursor
+    )
 
 # =====================
 # Web Scraping Funktion
@@ -77,14 +72,94 @@ def scrape_articles(query, count=3, max_retries=3):
 # =====================
 # Søgefunktionalitet
 # =====================
-def do_search(query_text="", filter_query=None, top=3, order_by=None):
+def refresh_materialized_view():
+    """Refresh the materialized view"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("REFRESH MATERIALIZED VIEW sourceview.foraisearch_with_search")
+        conn.commit()
+    except Exception as e:
+        st.error(f"Error refreshing materialized view: {e}")
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
+
+def do_search(query_text="", municipality=None, start_date=None, end_date=None, limit=20):
     """
-    Udfører en søgning med Azure Cognitive Search og returnerer dokumenter.
+    Perform full-text search using PostgreSQL
     """
-    results = search_client.search(search_text=query_text, filter=filter_query, top=top, include_total_count=True, order_by=order_by or [])
-    docs = [r for r in results]
-    total_count = results.get_count()
-    return docs, total_count
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Build the query
+        query = """
+            SELECT *,
+            ts_rank(search_vector, plainto_tsquery('danish', %s)) as rank
+            FROM sourceview.foraisearch_with_search
+            WHERE search_vector @@ plainto_tsquery('danish', %s)
+        """
+        params = [query_text, query_text]
+
+        # Add filters
+        if municipality and municipality != "Alle":
+            query += " AND municipality = %s"
+            params.append(municipality)
+
+        if start_date:
+            query += " AND date::date >= %s"
+            params.append(start_date)
+
+        if end_date:
+            query += " AND date::date <= %s"
+            params.append(end_date)
+
+        # Add ordering and limit
+        query += " ORDER BY rank DESC LIMIT %s"
+        params.append(limit)
+
+        # Execute search
+        cur.execute(query, params)
+        results = cur.fetchall()
+
+        # Get total count (without limit)
+        count_query = """
+            SELECT COUNT(*)
+            FROM sourceview.foraisearch_with_search
+            WHERE search_vector @@ plainto_tsquery('danish', %s)
+        """
+        count_params = [query_text]
+
+        if municipality and municipality != "Alle":
+            count_query += " AND municipality = %s"
+            count_params.append(municipality)
+
+        if start_date:
+            count_query += " AND date::date >= %s"
+            count_params.append(start_date)
+
+        if end_date:
+            count_query += " AND date::date <= %s"
+            count_params.append(end_date)
+
+        cur.execute(count_query, count_params)
+        total_count = cur.fetchone()['count']
+
+        return results, total_count
+
+    except Exception as e:
+        st.error(f"Search error: {e}")
+        return [], 0
+    finally:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+
 
 def show_results(docs, total_count=None):
     """
@@ -148,216 +223,305 @@ def show_results(docs, total_count=None):
                 st.write("Ingen relaterede artikler fundet.")
 
 # =====================
-# Hovedsøgefunktion
+# Main App
 # =====================
-with tab1:
-    with st.expander("### ℹ️ Sådan bruger du appen (Klik for at se mere)"):
-        st.markdown("""
-            Denne **Kommunale Mødeudtræk** app gør det nemt at **søge og udforske kommunale mødereferater** fra forskellige danske kommuner.
+def main():
+    # =====================
+    # Streamlit Page Config
+    # =====================
+    st.set_page_config(page_title="Kommunale Mødeudtræk", layout="wide")
+    st.title("🔍 Kommunale Mødeudtræk")
 
-            ### 🔍 **Sådan bruger du appen:**
-            1️⃣ **Søg i kommunale møder**  
-               - Indtast et søgeord (f.eks. *"bolig"*, *"budget"*, *"miljø"*).  
-               - Filtrér på **kommune** og **dato** efter behov.  
-               - Klik på **"🔎 Søg"** for at finde relevante møder.  
+    # Opret faner til navigation
+    tab1, tab2 = st.tabs(["Søg i kommunale møder", "Populære emner"])
 
-            2️⃣ **Gennemse resultaterne**  
-               - Klik på **📌** for at udvide og se detaljer om et møde.  
-               - Se **resumé, emne, beslutninger og fremtidige handlinger**.  
-               - Klik på **"Se hele dokumentet"** for at læse originalreferatet.  
+    # =====================
+    # Hovedsøgefunktion
+    # =====================
+    with tab1:
+        with st.expander("### ℹ️ Sådan bruger du appen (Klik for at se mere)"):
+            st.markdown("""
+                Denne **Kommunale Mødeudtræk** app gør det nemt at **søge og udforske kommunale mødereferater** fra forskellige danske kommuner.
+    
+                ### 🔍 **Sådan bruger du appen:**
+                1️⃣ **Søg i kommunale møder**  
+                   - Indtast et søgeord (f.eks. *"bolig"*, *"budget"*, *"miljø"*).  
+                   - Filtrér på **kommune** og **dato** efter behov.  
+                   - Klik på **"🔎 Søg"** for at finde relevante møder.  
+    
+                2️⃣ **Gennemse resultaterne**  
+                   - Klik på **📌** for at udvide og se detaljer om et møde.  
+                   - Se **resumé, emne, beslutninger og fremtidige handlinger**.  
+                   - Klik på **"Se hele dokumentet"** for at læse originalreferatet.  
+    
+                3️⃣ **Relaterede nyhedsartikler**  
+                   - Appen søger automatisk efter **relevante artikler** baseret på emnet.  
+                   - Klik på de viste links for at læse mere.  
+    
+                4️⃣ **Populære emner**  
+                   - Under fanen **"Populære emner"** kan du se **hvilke emner der diskuteres mest** i kommunerne.  
+    
+                📌 **Formål:** Øget gennemsigtighed i kommunale beslutninger og let adgang til information om lokalpolitik.
+            """)
 
-            3️⃣ **Relaterede nyhedsartikler**  
-               - Appen søger automatisk efter **relevante artikler** baseret på emnet.  
-               - Klik på de viste links for at læse mere.  
+        st.subheader("Søg i kommunale møder")
 
-            4️⃣ **Populære emner**  
-               - Under fanen **"Populære emner"** kan du se **hvilke emner der diskuteres mest** i kommunerne.  
+        query = st.text_input("Søg efter et emne (f.eks. 'bolig', 'budget', 'miljø'):", "")
 
-            📌 **Formål:** Øget gennemsigtighed i kommunale beslutninger og let adgang til information om lokalpolitik.
-        """)
+        # Get unique municipalities from database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT municipality FROM sourceview.foraisearch_with_search ORDER BY municipality")
+        municipalities = ["Alle"] + [row['municipality'] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
 
-    st.subheader("Søg i kommunale møder")
+        municipality_filter = st.selectbox("Filtrér efter kommune:", municipalities)
 
-    query = st.text_input("Søg efter et emne (f.eks. 'bolig', 'budget', 'miljø'):", "")
-    municipalities = ["Alle", "Slagelse", "Faxe", "Gladsaxe", "Herlev", "Hillerød", "Holbæk", "Hørsholm", "Næstved", "Odsherred", "Stevns", "Anden kommune"]
-    municipality_filter = st.selectbox("Filtrér efter kommune:", municipalities)
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Startdato", value=None)
+        with col2:
+            end_date = st.date_input("Slutdato", value=None)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Startdato", value=None)
-    with col2:
-        end_date = st.date_input("Slutdato", value=None)
+        filter_clauses = []
+        if municipality_filter != "Alle":
+            filter_clauses.append(f"municipality eq '{municipality_filter}'")
 
-    filter_clauses = []
-    if municipality_filter != "Alle":
-        filter_clauses.append(f"municipality eq '{municipality_filter}'")
+        if start_date and end_date:
+            filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z and date le {end_date.isoformat()}T23:59:59Z")
+        elif start_date:
+            filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z")
+        elif end_date:
+            filter_clauses.append(f"date le {end_date.isoformat()}T23:59:59Z")
 
-    if start_date and end_date:
-        filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z and date le {end_date.isoformat()}T23:59:59Z")
-    elif start_date:
-        filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z")
-    elif end_date:
-        filter_clauses.append(f"date le {end_date.isoformat()}T23:59:59Z")
+        filter_query = " and ".join(filter_clauses) if filter_clauses else None
 
-    filter_query = " and ".join(filter_clauses) if filter_clauses else None
+        if st.button("🔎 Søg"):
+            with st.spinner("Søger..."):
+                try:
+                    # Refresh materialized view before searching
+                    refresh_materialized_view()
+                    # Perform search
+                    docs, total_count = do_search(
+                        query_text=query,
+                        municipality=municipality_filter,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    show_results(docs, total_count)
+                except Exception as e:
+                    st.error(f"Der opstod en fejl: {e}")
 
-    if st.button("🔎 Søg"):
-        with st.spinner("Søger..."):
+        st.markdown("---")
+
+    # =====================
+    # Sektion for Populære Emner
+    # =====================
+    with tab2:
+        st.subheader("Populære Emner")
+
+
+        def fetch_all_categories():
+            """
+            Fetch category data from PostgreSQL
+            """
             try:
-                docs, total_count = do_search(query_text=query, filter_query=filter_query, top=20)
-                show_results(docs, total_count)
+                conn = get_db_connection()
+                cur = conn.cursor()
+
+                query = """
+                SELECT 
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                """
+
+                cur.execute(query)
+                results = cur.fetchall()
+                return results
             except Exception as e:
-                st.error(f"Der opstod en fejl: {e}")
-
-    st.markdown("---")
-
-# =====================
-# Sektion for Populære Emner
-# =====================
-with tab2:
-    st.subheader("Populære Emner")
-
-    # ------------------
-    # 1) Fetch Documents
-    # ------------------
-    def fetch_all_docs(search_client, top=1000):
-        """
-        Fetch up to 'top' documents from the Azure Search index.
-        Increase 'top' or implement continuation tokens if you have more than 1000 docs.
-        """
-        docs_iter = search_client.search(search_text="*", top=top)
-        return list(docs_iter)
+                st.error(f"Error fetching categories: {e}")
+                return []
+            finally:
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
 
-    # -------------------------
-    # 2) Show Popular Categories
-    # -------------------------
-    def show_popular_categories(search_client):
-        """
-        Overall category frequency across all municipalities (no filter).
-        """
-        st.header("Populære Kategorier (Alle Kommuner)")
-        docs = fetch_all_docs(search_client, top=1000)
+        def fetch_categories_by_municipality():
+            """
+            Fetch category data grouped by municipality
+            """
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
 
-        # Aggregate category frequency
-        cat_counter = Counter(doc.get("category", "") for doc in docs)
-        data = [(cat, cat_counter[cat]) for cat in cat_counter]
-        df = pd.DataFrame(data, columns=["category", "count"]).sort_values("count", ascending=False)
+                query = """
+                SELECT 
+                    municipality,
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE category IS NOT NULL
+                GROUP BY municipality, category
+                ORDER BY municipality, count DESC
+                """
 
-        # Display table
-        st.dataframe(df)
-
-        # Display bar chart
-        st.bar_chart(df.set_index("category"))
-
-
-    # --------------------------------------------
-    # 3) Show Categories Across Municipalities (Combined Chart)
-    # --------------------------------------------
-    def show_categories_by_municipality(search_client):
-        """
-        Shows a single bar chart comparing all municipalities vs. category counts.
-        """
-        st.header("Kategorier efter Kommuner (Samlet Overblik)")
-        docs = fetch_all_docs(search_client, top=1000)
-
-        # Build a nested dictionary: { municipality -> { category -> count } }
-        grouped = defaultdict(lambda: defaultdict(int))
-        for doc in docs:
-            muni = doc.get("municipality", "Unknown")
-            cat = doc.get("category", "Uncategorized")
-            grouped[muni][cat] += 1
-
-        # Flatten into rows
-        rows = []
-        for muni, cat_dict in grouped.items():
-            for cat, cnt in cat_dict.items():
-                rows.append({"municipality": muni, "category": cat, "count": cnt})
-
-        if not rows:
-            st.write("No data found.")
-            return
-
-        df = pd.DataFrame(rows)
-
-        # Create an Altair bar chart
-        chart = alt.Chart(df).mark_bar().encode(
-            x=alt.X("category:N", sort='-y'),
-            y=alt.Y("count:Q"),
-            color="municipality:N",
-            tooltip=["municipality:N", "category:N", "count:Q"]
-        ).properties(
-            width=600,
-            height=400
-        )
-        st.altair_chart(chart, use_container_width=True)
+                cur.execute(query)
+                results = cur.fetchall()
+                return results
+            except Exception as e:
+                st.error(f"Error fetching municipality categories: {e}")
+                return []
+            finally:
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
 
-    # -----------------------------------------------------
-    # 4) Show Categories for a Single Municipality (Filter)
-    # -----------------------------------------------------
-    def show_categories_for_single_municipality(search_client):
-        """
-        Let user pick one municipality and see categories + counts just for that municipality.
-        """
-        st.header("Kategorier for Udvalgte Kommuner")
-        docs = fetch_all_docs(search_client, top=1000)
+        def fetch_municipality_categories(municipality):
+            """
+            Fetch categories for a specific municipality
+            """
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
 
-        # Gather unique municipality names from docs
-        municipalities = set(doc.get("municipality", "Unknown") for doc in docs)
-        municipalities = sorted(municipalities)
-        municipalities.insert(0, "All")  # Option to view all municipalities combined
+                query = """
+                SELECT 
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE municipality = %s
+                AND category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                """
 
-        selected_muni = st.selectbox("Vælg en kommune:", municipalities)
-
-        # Filter docs if user doesn't pick "All"
-        if selected_muni != "All":
-            docs = [d for d in docs if d.get("municipality", "Unknown") == selected_muni]
-
-        # Tally up category counts
-        cat_counter = Counter(d.get("category", "Uncategorized") for d in docs)
-        data = [(cat, cat_counter[cat]) for cat in cat_counter]
-        df = pd.DataFrame(data, columns=["category", "count"]).sort_values("count", ascending=False)
-
-        if df.empty:
-            st.write("No categories found for this selection.")
-            return
-
-        # Show table
-        st.dataframe(df)
-
-        # Bar Chart for this municipality
-        chart = alt.Chart(df).mark_bar().encode(
-            x=alt.X("count:Q", title="Count"),
-            y=alt.Y("category:N", sort='-x', title="Category"),
-            tooltip=["category", "count"]
-        ).properties(
-            width=600,
-            height=400
-        )
-        st.altair_chart(chart, use_container_width=True)
+                cur.execute(query, [municipality])
+                results = cur.fetchall()
+                return results
+            except Exception as e:
+                st.error(f"Error fetching municipality categories: {e}")
+                return []
+            finally:
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
 
-    # ---------------------------
-    # 5) Main "Popular Topics" App
-    # ---------------------------
-    def popular_topics_app(search_client):
-        """
-        Wraps all your 'popular topics' functionality into a single function.
-        """
-        st.title("Popular Topics Overview")
+        def show_popular_categories():
+            """
+            Display overall category frequency
+            """
+            st.header("Populære Kategorier (Alle Kommuner)")
+            categories = fetch_all_categories()
 
-        # 1) Show overall categories
-        show_popular_categories(search_client)
-        st.write("---")
+            if categories:
+                # Convert to DataFrame
+                df = pd.DataFrame(categories)
 
-        # 2) Show combined categories by all municipalities
-        show_categories_by_municipality(search_client)
-        st.write("---")
+                # Display table
+                st.dataframe(df)
 
-        # 3) Show categories for a single municipality (filtered)
-        show_categories_for_single_municipality(search_client)
+                # Create bar chart
+                st.bar_chart(df.set_index("category"))
+            else:
+                st.write("Ingen kategorier fundet.")
 
-    popular_topics_app(search_client)
 
-    #st.write("This section is currently under development.")
+        def show_categories_by_municipality():
+            """
+            Display categories across municipalities
+            """
+            st.header("Kategorier efter Kommuner (Samlet Overblik)")
+            results = fetch_categories_by_municipality()
+
+            if results:
+                # Convert to DataFrame
+                df = pd.DataFrame(results)
+
+                # Create Altair chart
+                chart = alt.Chart(df).mark_bar().encode(
+                    x=alt.X("category:N", sort='-y'),
+                    y=alt.Y("count:Q"),
+                    color="municipality:N",
+                    tooltip=["municipality:N", "category:N", "count:Q"]
+                ).properties(
+                    width=600,
+                    height=400
+                )
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.write("Ingen data fundet.")
+
+
+        def show_categories_for_single_municipality():
+            """
+            Display categories for a selected municipality
+            """
+            st.header("Kategorier for Udvalgte Kommuner")
+
+            # Get unique municipalities
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT municipality FROM sourceview.foraisearch_with_search ORDER BY municipality")
+            municipalities = ["Alle"] + [row['municipality'] for row in cur.fetchall()]
+            cur.close()
+            conn.close()
+
+            selected_muni = st.selectbox("Vælg en kommune:", municipalities)
+
+            if selected_muni != "Alle":
+                results = fetch_municipality_categories(selected_muni)
+                if results:
+                    df = pd.DataFrame(results)
+
+                    # Show table
+                    st.dataframe(df)
+
+                    # Create bar chart
+                    chart = alt.Chart(df).mark_bar().encode(
+                        x=alt.X("count:Q", title="Antal"),
+                        y=alt.Y("category:N", sort='-x', title="Kategori"),
+                        tooltip=["category", "count"]
+                    ).properties(
+                        width=600,
+                        height=400
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.write("Ingen kategorier fundet for denne kommune.")
+
+
+        # Main function for tab 2
+        def popular_topics_app():
+            """
+            Main function for the Popular Topics tab
+            """
+            st.title("Overblik over Populære Emner")
+
+            # Show overall categories
+            show_popular_categories()
+            st.write("---")
+
+            # Show categories by municipality
+            show_categories_by_municipality()
+            st.write("---")
+
+            # Show categories for single municipality
+            show_categories_for_single_municipality()
+
+        popular_topics_app()
+
+        #st.write("This section is currently under development.")
+
+if __name__ == "__main__":
+    main()
