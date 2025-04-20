@@ -5,10 +5,10 @@ from psycopg2.extras import RealDictCursor
 from collections import Counter, defaultdict
 import pandas as pd
 import altair as alt
-from duckduckgo_search import DDGS
+#from duckduckgo_search import DDGS
 import time
 import random
-from datetime import datetime
+#from datetime import datetime
 
 # =====================
 # Database Settings
@@ -33,41 +33,41 @@ def get_db_connection():
 # =====================
 # Web Scraping Funktion
 # =====================
-def scrape_articles(query, count=3, max_retries=3):
-    """
-    Søger på DuckDuckGo efter relevante nyhedsartikler og håndterer rate limits.
-    Implementerer en tilbageholdelsesstrategi for at undgå blokeringer.
-    """
-    results = []
-    attempt = 0
-    delay = 2  # Startforsinkelse i sekunder
-
-    while attempt < max_retries:
-        try:
-            with DDGS() as ddgs:
-                search_results = ddgs.text(query, max_results=count)
-
-                for result in search_results:
-                    title = result["title"]
-                    url = result["href"]
-                    snippet = result["body"]
-                    results.append((title, url, snippet))
-
-                break  # Afslutter loopet ved succes
-
-        except Exception as e:
-            print(f"⚠️ Fejl ved søgning: {e}")
-            attempt += 1
-            time.sleep(delay)
-            delay *= 2
-
-            if attempt == max_retries:
-                print("❌ Maksimale antal forsøg nået. Returnerer tom liste.")
-                return []
-
-    time.sleep(random.uniform(1, 3))
-
-    return results
+# def scrape_articles(query, count=3, max_retries=3):
+#     """
+#     Søger på DuckDuckGo efter relevante nyhedsartikler og håndterer rate limits.
+#     Implementerer en tilbageholdelsesstrategi for at undgå blokeringer.
+#     """
+#     results = []
+#     attempt = 0
+#     delay = 2  # Startforsinkelse i sekunder
+#
+#     while attempt < max_retries:
+#         try:
+#             with DDGS() as ddgs:
+#                 search_results = ddgs.text(query, max_results=count)
+#
+#                 for result in search_results:
+#                     title = result["title"]
+#                     url = result["href"]
+#                     snippet = result["body"]
+#                     results.append((title, url, snippet))
+#
+#                 break  # Afslutter loopet ved succes
+#
+#         except Exception as e:
+#             print(f"⚠️ Fejl ved søgning: {e}")
+#             attempt += 1
+#             time.sleep(delay)
+#             delay *= 2
+#
+#             if attempt == max_retries:
+#                 print("❌ Maksimale antal forsøg nået. Returnerer tom liste.")
+#                 return []
+#
+#     time.sleep(random.uniform(1, 3))
+#
+#     return results
 
 # =====================
 # Søgefunktionalitet
@@ -172,8 +172,12 @@ def show_results(docs, total_count=None):
         date_val = doc.get("date", "")
 
         # Konverter datoformat til YYYY-MM-DD
+        # With this:
         if date_val:
-            date_val = date_val.split("T")[0]
+            if isinstance(date_val, str):
+                date_val = date_val.split("T")[0]
+            else:
+                date_val = date_val.strftime("%Y-%m-%d")
 
         municipality_val = doc.get("municipality", "")
         summary_val = doc.get("summary", "")
@@ -188,8 +192,8 @@ def show_results(docs, total_count=None):
         category_val = doc.get("category", "Ingen kategori")
         base_url = doc.get("site", "")
 
-        # Hent relaterede artikler
-        articles = scrape_articles(f"{subject_title_val} {municipality_val}")
+        # # Hent relaterede artikler
+        # articles = scrape_articles(f"{subject_title_val} {municipality_val}")
 
         with st.expander(f"📌 {municipality_val} ({date_val})"):
             st.write(f"**Kommune:** {municipality_val}")
@@ -212,15 +216,15 @@ def show_results(docs, total_count=None):
             if content_url != "#":
                 st.markdown(f"[📄 **Se hele dokumentet**]({content_url})")
 
-            # Vis relaterede artikler
-            st.markdown("#### 🔗 Relaterede artikler")
-            valid_articles = [(title, link) for title, link, _ in articles if title.strip() and link.strip()]
-
-            if valid_articles:
-                for article_title, article_link in valid_articles:
-                    st.markdown(f"- **[{article_title}]({article_link})**")
-            else:
-                st.write("Ingen relaterede artikler fundet.")
+            # # Vis relaterede artikler
+            # st.markdown("#### 🔗 Relaterede artikler")
+            # valid_articles = [(title, link) for title, link, _ in articles if title.strip() and link.strip()]
+            #
+            # if valid_articles:
+            #     for article_title, article_link in valid_articles:
+            #         st.markdown(f"- **[{article_title}]({article_link})**")
+            # else:
+            #     st.write("Ingen relaterede artikler fundet.")
 
 # =====================
 # Main App
