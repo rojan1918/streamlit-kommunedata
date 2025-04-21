@@ -19,12 +19,6 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
-DB_NAME="arevo"
-DB_USER="arevo_user"
-DB_PASSWORD="mssnmJOCb0J3VgvEywQuC40DFzBulxOu"
-DB_HOST="dpg-d01unibe5dus73bjjn60-a.frankfurt-postgres.render.com"
-DB_PORT="5432"
-
 def get_db_connection():
     """Create database connection"""
     return psycopg2.connect(
