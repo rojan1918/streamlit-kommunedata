@@ -19,6 +19,12 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
+DB_NAME="arevo"
+DB_USER="arevo_user"
+DB_PASSWORD="mssnmJOCb0J3VgvEywQuC40DFzBulxOu"
+DB_HOST="dpg-d01unibe5dus73bjjn60-a.frankfurt-postgres.render.com"
+DB_PORT="5432"
+
 def get_db_connection():
     """Create database connection"""
     return psycopg2.connect(
@@ -284,6 +290,29 @@ def show_results(docs, total_count=None):
             # else:
             #     st.write("Ingen relaterede artikler fundet.")
 
+
+def add_custom_css():
+    # Create custom CSS for input field styling
+    custom_css = """
+        <style>
+            /* Target the Streamlit text input, selectbox, and date input fields */
+            .stTextInput input, .stSelectbox select, .stDateInput input {
+                border: 2px solid #4e89ae !important;  /* Add a blue border */
+                border-radius: 5px !important;         /* Rounded corners */
+                padding: 10px !important;              /* More padding for better visibility */
+                box-shadow: 0 0 5px rgba(78, 137, 174, 0.2) !important;  /* Subtle shadow */
+            }
+
+            /* Hover effect for better user experience */
+            .stTextInput input:hover, .stSelectbox select:hover, .stDateInput input:hover {
+                border-color: #2c699a !important;      /* Darker blue on hover */
+                box-shadow: 0 0 8px rgba(78, 137, 174, 0.4) !important;  /* Enhanced shadow */
+            }
+        </style>
+    """
+    # Inject the CSS into the Streamlit app
+    st.markdown(custom_css, unsafe_allow_html=True)
+
 # =====================
 # Main App
 # =====================
@@ -292,6 +321,10 @@ def main():
     # Streamlit Page Config
     # =====================
     st.set_page_config(page_title="Kommunale Mødeudtræk", layout="wide")
+
+    # Add custom CSS for styling input fields
+    add_custom_css()
+
     st.title("🔍 Kommunale Mødeudtræk")
 
     # Opret faner til navigation
@@ -328,8 +361,9 @@ def main():
 
         st.subheader("Søg i kommunale møder")
 
-        query = st.text_input("Søg efter et emne (f.eks. 'bolig', 'budget', 'miljø'):", "")
-
+        query = st.text_input(
+            "Søg efter et emne (f.eks. 'budget', 'lokalplan', 'fjernvarme', 'takster', 'ældreboliger', 'personalepolitik', 'udbuds', 'klimatilpasning', 'whistleblower', 'daginstitution', 'anlægsbevilling', 'garantistillelse'):",
+            "")
         # Get unique municipalities from database
         conn = get_db_connection()
         cur = conn.cursor()
@@ -342,9 +376,9 @@ def main():
 
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("Startdato", value=None)
+            start_date = st.date_input("Startdato (Valgfrit)", value=None)
         with col2:
-            end_date = st.date_input("Slutdato", value=None)
+            end_date = st.date_input("Slutdato (Valgfrit)", value=None)
 
         filter_clauses = []
         if municipality_filter != "Alle":
