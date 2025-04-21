@@ -98,12 +98,43 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
 
         # Build the query
         query = """
-            SELECT *,
-            ts_rank(search_vector, plainto_tsquery('danish', %s)) as rank
-            FROM sourceview.foraisearch_with_search
-            WHERE search_vector @@ plainto_tsquery('danish', %s)
-        """
+                    SELECT 
+                        t.id, t.municipality, t.date, t.participants, t.guests, t.title, 
+                        t.summary, t.tags, t.content_url, t.category, t.search_sentences,
+                        t.decided_or_not, t.future_action, t.description, t.subject_title, t.amount,
+                        COALESCE(ts_rank_score, 0) as ts_rank_score,
+                        COALESCE(similarity_score, 0) as similarity_score
+                    FROM (
+                        SELECT 
+                            *,
+                            ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
+                            similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            ) as similarity_score
+                        FROM sourceview.foraisearch_with_search
+                    ) t
+                    WHERE """
+
         params = [query_text, query_text]
+
+        # Add wildcard search for even better matches
+        wildcard_query = " | ".join([f"{word}:*" for word in query_text.split()])
+
+        # Add conditions - both exact matches and similarity
+        where_conditions = [
+            "t.search_vector @@ plainto_tsquery('danish', %s)",
+            "t.search_vector @@ to_tsquery('danish', %s)",
+            "t.similarity_score > 0.05"  # Adjust threshold as needed
+        ]
+
+        query += " OR ".join(where_conditions)
+        params.extend([query_text, wildcard_query])
 
         # Add filters
         if municipality and municipality != "Alle":
@@ -118,21 +149,48 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             query += " AND date::date <= %s"
             params.append(end_date)
 
-        # Add ordering and limit
-        query += " ORDER BY rank DESC LIMIT %s"
-        params.append(limit)
+            # Add ordering and limit
+            query += """
+            ORDER BY ((ts_rank(search_vector, plainto_tsquery('danish', %s))) + (similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            )) * 0.8) DESC LIMIT %s
+            """
+            params.append(limit)
 
         # Execute search
         cur.execute(query, params)
         results = cur.fetchall()
 
-        # Get total count (without limit)
+        # Count query for total matches
         count_query = """
-            SELECT COUNT(*)
-            FROM sourceview.foraisearch_with_search
-            WHERE search_vector @@ plainto_tsquery('danish', %s)
-        """
-        count_params = [query_text]
+                    SELECT COUNT(*) 
+                    FROM (
+                        SELECT 
+                            *,
+                            ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
+                            similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            ) as similarity_score
+                        FROM sourceview.foraisearch_with_search
+                    ) t
+                    WHERE """
+
+        count_params = [query_text, query_text]
+
+        count_query += " OR ".join(where_conditions)
+        count_params.extend([query_text, wildcard_query])
 
         if municipality and municipality != "Alle":
             count_query += " AND municipality = %s"
