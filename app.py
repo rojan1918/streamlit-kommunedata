@@ -355,8 +355,9 @@ def main():
 
         st.subheader("Søg i kommunale møder")
 
-        query = st.text_input("Søg efter et emne (f.eks. 'bolig', 'budget', 'miljø'):", "")
-
+        query = st.text_input(
+            "Søg efter et emne (f.eks. 'budget', 'lokalplan', 'fjernvarme', 'takster', 'ældreboliger', 'personalepolitik', 'udbuds', 'klimatilpasning', 'whistleblower', 'daginstitution', 'anlægsbevilling', 'garantistillelse'):",
+            "")
         # Get unique municipalities from database
         conn = get_db_connection()
         cur = conn.cursor()
