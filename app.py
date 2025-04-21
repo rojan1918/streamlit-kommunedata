@@ -141,13 +141,13 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             query += " AND municipality = %s"
             params.append(municipality)
 
-        if start_date:
-            query += " AND date::date >= %s"
-            params.append(start_date)
-
-        if end_date:
-            query += " AND date::date <= %s"
-            params.append(end_date)
+        # if start_date:
+        #     query += " AND date::date >= %s"
+        #     params.append(start_date)
+        #
+        # if end_date:
+        #     query += " AND date::date <= %s"
+        #     params.append(end_date)
 
             # Add ordering and limit
             query += """
@@ -196,13 +196,13 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             count_query += " AND municipality = %s"
             count_params.append(municipality)
 
-        if start_date:
-            count_query += " AND date::date >= %s"
-            count_params.append(start_date)
-
-        if end_date:
-            count_query += " AND date::date <= %s"
-            count_params.append(end_date)
+        # if start_date:
+        #     count_query += " AND date::date >= %s"
+        #     count_params.append(start_date)
+        #
+        # if end_date:
+        #     count_query += " AND date::date <= %s"
+        #     count_params.append(end_date)
 
         cur.execute(count_query, count_params)
         total_count = cur.fetchone()['count']
@@ -368,22 +368,22 @@ def main():
 
         municipality_filter = st.selectbox("Filtrér efter kommune:", municipalities)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input("Startdato", value=None)
-        with col2:
-            end_date = st.date_input("Slutdato", value=None)
+        # col1, col2 = st.columns(2)
+        # with col1:
+        #     start_date = st.date_input("Startdato", value=None)
+        # with col2:
+        #     end_date = st.date_input("Slutdato", value=None)
 
         filter_clauses = []
         if municipality_filter != "Alle":
             filter_clauses.append(f"municipality eq '{municipality_filter}'")
 
-        if start_date and end_date:
-            filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z and date le {end_date.isoformat()}T23:59:59Z")
-        elif start_date:
-            filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z")
-        elif end_date:
-            filter_clauses.append(f"date le {end_date.isoformat()}T23:59:59Z")
+        # if start_date and end_date:
+        #     filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z and date le {end_date.isoformat()}T23:59:59Z")
+        # elif start_date:
+        #     filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z")
+        # elif end_date:
+        #     filter_clauses.append(f"date le {end_date.isoformat()}T23:59:59Z")
 
         filter_query = " and ".join(filter_clauses) if filter_clauses else None
 
@@ -396,8 +396,8 @@ def main():
                     docs, total_count = do_search(
                         query_text=query,
                         municipality=municipality_filter,
-                        start_date=start_date,
-                        end_date=end_date
+                        #start_date=start_date,
+                        #end_date=end_date
                     )
                     show_results(docs, total_count)
                 except Exception as e:
