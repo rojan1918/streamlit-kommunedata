@@ -2,19 +2,14 @@ import streamlit as st
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-# from collections import Counter, defaultdict # Not explicitly used in the final version of popular topics
 import pandas as pd
 import altair as alt
-# from duckduckgo_search import DDGS # Commented out in original
 import time
-
-# import random # Commented out in original (was for scrape_articles)
-# from datetime import datetime # Not explicitly used for date formatting in final card version
+import html  # Import the html module for escaping
 
 # =====================
 # Database Settings
 # =====================
-# It's good practice to ensure these are set in your environment
 DB_NAME = os.getenv("DB_NAME")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -32,20 +27,11 @@ def get_db_connection():
             host=DB_HOST,
             port=DB_PORT,
             cursor_factory=RealDictCursor
-            # client_encoding='UTF8' # Explicitly set client encoding if needed
         )
         return conn
     except Exception as e:
         st.error(f"Database connection error: {e}. Please check your environment variables and database status.")
         return None
-
-
-# =====================
-# Web Scraping Funktion (Commented out as in original)
-# =====================
-# def scrape_articles(query, count=3, max_retries=3):
-#     # ... (original commented out code) ...
-#     pass
 
 
 # =====================
@@ -60,7 +46,6 @@ def refresh_materialized_view():
         with conn.cursor() as cur:
             cur.execute("REFRESH MATERIALIZED VIEW sourceview.foraisearch_with_search")
             conn.commit()
-            # st.toast("Materialized view refreshed.", icon="🔄") # Optional feedback
     except Exception as e:
         st.error(f"Error refreshing materialized view: {e}")
     finally:
@@ -213,17 +198,18 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             conn.close()
 
 
-# Placeholder for the rest of the functions from the previous complete script:
 def show_results_in_cards(docs, total_count=None):
     """
     Viser en liste over dokumenter i Streamlit UI ved hjælp af et kortlayout.
+    Uses html.escape() for safely displaying text.
     """
     current_query = st.session_state.get('search_query_app', "")
 
     if total_count is not None:
         st.write(f"**Antal resultater:** {total_count}")
         if total_count == 0 and current_query:
-            st.info(f"Ingen resultater fundet for '{current_query}'. Prøv et andet søgeord eller juster dine filtre.")
+            st.info(
+                f"Ingen resultater fundet for '{html.escape(current_query)}'. Prøv et andet søgeord eller juster dine filtre.")
         elif total_count == 0 and not current_query and st.session_state.get('search_initiated', False):
             st.info("Ingen resultater at vise. Indtast venligst et søgeord for at starte en søgning.")
 
@@ -249,56 +235,57 @@ def show_results_in_cards(docs, total_count=None):
         content_url = doc.get("content_url", "#")
         tags_val = doc.get("tags", [])
         decided = doc.get("decided_or_not", False)
-        amount = doc.get("amount", "")
+        amount = str(doc.get("amount", ""))  # Ensure amount is a string for escaping
 
         max_summary_length = 250
         display_summary = summary_val
         if summary_val and len(summary_val) > max_summary_length:
             display_summary = summary_val[:max_summary_length] + "..."
 
+        # Use html.escape() for all dynamic string content injected into HTML
         card_content = f"""
         <div class="result-card">
-            <h3>{st.markdown.escape(subject_title_val)}</h3>
+            <h3>{html.escape(subject_title_val)}</h3>
             <p class="meta-info">
-                <strong>Kommune:</strong> {st.markdown.escape(municipality_val)} | 
-                <strong>Dato:</strong> {st.markdown.escape(str(date_val)) or 'Ukendt'} |
+                <strong>Kommune:</strong> {html.escape(municipality_val)} | 
+                <strong>Dato:</strong> {html.escape(str(date_val)) or 'Ukendt'} |
                 <strong>Beslutning truffet:</strong> {'Ja' if decided else 'Nej'}
-                {f"| <strong>Bevilliget beløb:</strong> {st.markdown.escape(str(amount))} DKK" if amount else ""}
+                {f"| <strong>Bevilliget beløb:</strong> {html.escape(amount)} DKK" if amount else ""}
             </p>
-            <p>{st.markdown.escape(display_summary)}</p>
+            <p>{html.escape(display_summary)}</p>
         """
 
-        processed_tags = []  # Define before conditional assignment
+        processed_tags = []
         if tags_val:
-            tags_html = "<div class='tags'>"
+            tags_html_parts = ["<div class='tags'>"]
             if isinstance(tags_val, str):
                 processed_tags = [tag.strip() for tag in tags_val.split(',') if tag.strip()]
             elif isinstance(tags_val, list):
                 processed_tags = [str(tag) for tag in tags_val if tag]
 
             for tag in processed_tags:
-                tags_html += f"<span>{st.markdown.escape(tag)}</span>"
-            tags_html += "</div>"
-            card_content += tags_html
+                tags_html_parts.append(f"<span>{html.escape(tag)}</span>")
+            tags_html_parts.append("</div>")
+            card_content += "".join(tags_html_parts)
 
         if content_url and content_url != "#":
             card_content += f"""
             <p style="margin-top: 15px;">
-                <a href="{st.markdown.escape(content_url)}" target="_blank">📄 Se hele dokumentet</a>
+                <a href="{html.escape(content_url)}" target="_blank">📄 Se hele dokumentet</a>
             </p>
             """
 
         card_content += "</div>"
         st.markdown(card_content, unsafe_allow_html=True)
 
-        with st.expander(f"Se flere detaljer for: \"{subject_title_val[:50]}...\""):
+        with st.expander(f"Se flere detaljer for: \"{html.escape(subject_title_val[:50])}...\""):
             st.write(f"**Kommune:** {municipality_val}")
             st.write(f"**Fuld Resumé:** {summary_val}")
             st.write(f"**Emnetitel:** {subject_title_val}")
             st.write(f"**Emnebeskrivelse:** {doc.get('description', 'N/A')}")
             st.write(f"**Fremtidig handling:** {doc.get('future_action', 'N/A')}")
             if tags_val:
-                if processed_tags:
+                if processed_tags:  # Use the already processed list of tags
                     st.write(f"**Tags for mødet generelt:** {', '.join(processed_tags)}")
                 else:
                     st.write(f"**Tags for mødet generelt:** Ingen gyldige tags")
@@ -306,7 +293,7 @@ def show_results_in_cards(docs, total_count=None):
                 st.write(f"**Tags for mødet generelt:** Ingen tags")
 
             st.write(f"**Beslutning truffet:** {'Ja' if decided else 'Nej'}")
-            if amount:
+            if amount:  # Use the string version of amount
                 st.write(f"**Bevilliget beløb:** {amount} DKK")
             st.write(f"**Søgesætninger til dokumentet:** {doc.get('search_sentences', 'N/A')}")
             if content_url and content_url != "#":
@@ -518,10 +505,13 @@ def main():
                         municipality=municipality_filter_sidebar,
                     )
                     show_results_in_cards(docs, total_count)
-                except Exception as e:
+                except Exception as e:  # Catch general exceptions from do_search or show_results
                     st.error(f"Der opstod en fejl under søgningen: {e}")
+                    print(f"Error in search button logic: {e}")  # Also print to console
         else:
             if st.session_state.search_initiated:
+                # This logic might need refinement if you want to show stale results
+                # For now, it clears results if search button isn't clicked again
                 show_results_in_cards([], 0)
             else:
                 show_results_in_cards([], None)
