@@ -5,7 +5,6 @@ from psycopg2.extras import RealDictCursor
 import pandas as pd
 import altair as alt
 import time
-import html  # Import the html module for escaping
 
 # =====================
 # Database Settings
