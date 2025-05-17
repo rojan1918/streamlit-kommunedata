@@ -70,7 +70,7 @@ def refresh_materialized_view():
 
 def do_search(query_text="", municipality=None, start_date=None, end_date=None, limit=20):
     """
-    Perform full-text search using PostgreSQL, using %s style parameters.
+    Perform full-text search using PostgreSQL, with SQL logic based on the user's original script.
     """
     conn = get_db_connection()
     if not conn:
@@ -78,12 +78,15 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
 
     results = []
     total_count = 0
-    safe_query_text = query_text if query_text else ""  # Ensure it's not None for functions
+
+    # Ensure query_text is not None for SQL functions
+    safe_query_text = query_text if query_text else ""
 
     try:
         with conn.cursor() as cur:
-            # Build the query using %s placeholders
-            query_sql_template = """
+            # Build the query based on the original script's structure
+            # Base query structure
+            query_sql = """
                 SELECT  
                     t.id, t.municipality, t.date, t.participants, t.guests, t.title,  
                     t.summary, t.tags, t.content_url, t.category, t.search_sentences,
@@ -107,50 +110,48 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
                 ) t
                 WHERE 
             """
-            # Params for the SELECT subquery part. These are always present.
-            params_list = [safe_query_text, safe_query_text]
+            params_list = [safe_query_text, safe_query_text]  # Initial params for the subquery
 
+            # Add wildcard search for even better matches
             wildcard_query_parts = [f"{word}:*" for word in safe_query_text.split() if word]
             wildcard_query = " | ".join(wildcard_query_parts) if wildcard_query_parts else ""
 
+            # Add conditions - both exact matches and similarity
+            # These are for the WHERE clause
             where_conditions_sql_parts = []
-            # These params are for the WHERE clause and are added conditionally
-            where_params_list = []
+            where_params_list_for_main_query = []
 
-            if safe_query_text:
-                # Condition for plainto_tsquery
-                where_conditions_sql_parts.append("t.search_vector @@ plainto_tsquery('danish', %s)")
-                where_params_list.append(safe_query_text)
-
-                # Condition for similarity_score
-                where_conditions_sql_parts.append("t.similarity_score > 0.05")
-                # No parameter for similarity_score > 0.05 as it's a fixed value
+            if safe_query_text:  # Only add text search conditions if query_text is provided
+                where_conditions_sql_parts.extend([
+                    "t.search_vector @@ plainto_tsquery('danish', %s)",
+                    "t.similarity_score > 0.05"  # No parameter for this part
+                ])
+                where_params_list_for_main_query.append(safe_query_text)  # For plainto_tsquery
 
                 if wildcard_query:
                     where_conditions_sql_parts.append("t.search_vector @@ to_tsquery('danish', %s)")
-                    where_params_list.append(wildcard_query)
+                    where_params_list_for_main_query.append(wildcard_query)  # For to_tsquery
 
-            # Combine initial params with where_params
-            current_params_for_main_query = params_list + where_params_list
-
-            final_query_sql = query_sql_template  # Start with the base template
-
-            if not where_conditions_sql_parts:
+            if not where_conditions_sql_parts:  # No text search query
                 if municipality and municipality != "Alle":
-                    final_query_sql += " 1=1 "
+                    query_sql += " 1=1 "  # If only municipality filter, start with a true condition
                 else:
-                    final_query_sql += " 1=0 "  # No search criteria, return nothing
+                    query_sql += " 1=0 "  # No search text and no specific municipality filter, return nothing
             else:
-                final_query_sql += " (" + " OR ".join(where_conditions_sql_parts) + ") "
+                query_sql += " (" + " OR ".join(where_conditions_sql_parts) + ") "
 
+            # Combine initial params with WHERE params
+            current_params_for_main_query = params_list + where_params_list_for_main_query
+
+            # Add filters
             if municipality and municipality != "Alle":
-                final_query_sql += " AND municipality = %s"
+                query_sql += " AND municipality = %s"
                 current_params_for_main_query.append(municipality)
 
-            # Params for ORDER BY, added conditionally
+            # Add ordering and limit
             orderby_params_list = []
-            if safe_query_text:
-                final_query_sql += """
+            if safe_query_text:  # Only order by rank/similarity if there's a query text
+                query_sql += """
                 ORDER BY ((ts_rank(search_vector, plainto_tsquery('danish', %s))) + (similarity(
                                 (((((((((COALESCE(municipality, '')::text || ' ') ||  
                                 COALESCE(title, '')::text) || ' ') ||  
@@ -161,40 +162,38 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
                                 %s 
                             )) * 0.8) DESC 
                 """
-                orderby_params_list.extend([safe_query_text, safe_query_text])  # Params for ORDER BY
-            else:
-                final_query_sql += " ORDER BY date DESC NULLS LAST "
+                orderby_params_list.extend([safe_query_text, safe_query_text])
+            else:  # Default order if no search text (e.g., by date)
+                query_sql += " ORDER BY date DESC NULLS LAST "
 
             current_params_for_main_query.extend(orderby_params_list)
 
-            final_query_sql += " LIMIT %s"
+            query_sql += " LIMIT %s"
             current_params_for_main_query.append(limit)
 
             # --- DEBUGGING PRINTS ---
-            print("--- MAIN QUERY SQL (template with %s) ---")
-            print(final_query_sql)
+            print("--- MAIN QUERY SQL (Original Logic Style) ---")
+            print(query_sql)
             print("--- MAIN QUERY PARAMS LIST (current_params_for_main_query) ---")
             print(current_params_for_main_query)
             try:
                 print("--- MAIN QUERY CUR.Mogrify() ---")
-                # Use the fully assembled current_params_for_main_query
-                print(cur.mogrify(final_query_sql, tuple(current_params_for_main_query)).decode(conn.encoding))
+                print(cur.mogrify(query_sql, tuple(current_params_for_main_query)).decode(conn.encoding))
             except Exception as e_mogrify:
                 print(f"Error during mogrify: {e_mogrify}")
             # --- END DEBUGGING PRINTS ---
 
-            cur.execute(final_query_sql, tuple(current_params_for_main_query))
+            cur.execute(query_sql, tuple(current_params_for_main_query))
             results = cur.fetchall()
 
             # Count query for total matches
-            # The subquery in COUNT needs its own parameters for ts_rank and similarity,
-            # even if the outer query doesn't directly use their results for counting.
-            count_query_sql_template = """
-                SELECT COUNT(*) 
+            # This also needs to be structured like the original script's count query
+            count_query_sql = """
+                SELECT COUNT(*)  
                 FROM (
-                    SELECT 
-                        *, 
-                        ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score, 
+                    SELECT  
+                        *,
+                        ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
                         similarity(
                             ((((((((COALESCE(municipality, '')::text || ' ') ||  
                             COALESCE(title, '')::text) || ' ') ||  
@@ -203,31 +202,28 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
                             COALESCE(future_action, '')::text) || ' ') ||  
                             COALESCE(subject_title, '')::text),
                             %s
-                        ) as similarity_score 
+                        ) as similarity_score
                     FROM sourceview.foraisearch_with_search
-                ) t 
+                ) t
                 WHERE 
             """
-            # Initial params for the subquery part of the count query
-            final_count_params_list = [safe_query_text, safe_query_text]
+            # Parameters for the subquery part of the COUNT query
+            count_params_list_for_subquery = [safe_query_text, safe_query_text]
 
-            count_query_sql = count_query_sql_template  # Start with the template
-
-            # WHERE conditions for the count query (similar to main query)
+            # WHERE conditions for the count query
             count_where_conditions_sql_parts = []
             count_where_params_list = []
 
             if safe_query_text:
-                count_where_conditions_sql_parts.append("t.search_vector @@ plainto_tsquery('danish', %s)")
+                count_where_conditions_sql_parts.extend([
+                    "t.search_vector @@ plainto_tsquery('danish', %s)",
+                    "t.similarity_score > 0.05"
+                ])
                 count_where_params_list.append(safe_query_text)
-
-                count_where_conditions_sql_parts.append("t.similarity_score > 0.05")
 
                 if wildcard_query:
                     count_where_conditions_sql_parts.append("t.search_vector @@ to_tsquery('danish', %s)")
                     count_where_params_list.append(wildcard_query)
-
-            final_count_params_list.extend(count_where_params_list)  # Add WHERE params
 
             if not count_where_conditions_sql_parts:
                 if municipality and municipality != "Alle":
@@ -237,12 +233,14 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             else:
                 count_query_sql += " (" + " OR ".join(count_where_conditions_sql_parts) + ") "
 
+            final_count_params_list = count_params_list_for_subquery + count_where_params_list
+
             if municipality and municipality != "Alle":
                 count_query_sql += " AND municipality = %s"
                 final_count_params_list.append(municipality)
 
             # --- DEBUGGING PRINTS FOR COUNT QUERY ---
-            print("--- COUNT QUERY SQL (template with %s) ---")
+            print("--- COUNT QUERY SQL (Original Logic Style) ---")
             print(count_query_sql)
             print("--- COUNT QUERY PARAMS LIST (final_count_params_list) ---")
             print(final_count_params_list)
@@ -274,17 +272,10 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
     return results, total_count
 
 
-# ... (rest of your Streamlit app code from the previous version, including:
-# show_results_in_cards, add_enhanced_custom_css, get_municipalities_list, main, tab2 functions, etc.)
-# For brevity, I'm not repeating the entire file here.
-# Only the do_search function has been significantly modified in this step.
-# You would integrate this do_search function into the complete script from the previous artifact.
-
 # Placeholder for the rest of the functions from the previous complete script:
 def show_results_in_cards(docs, total_count=None):
     """
     Viser en liste over dokumenter i Streamlit UI ved hjælp af et kortlayout.
-    (Code from previous version of streamlit_app_full_code_v3)
     """
     current_query = st.session_state.get('search_query_app', "")
 
@@ -365,12 +356,12 @@ def show_results_in_cards(docs, total_count=None):
             st.write(f"**Emnetitel:** {subject_title_val}")
             st.write(f"**Emnebeskrivelse:** {doc.get('description', 'N/A')}")
             st.write(f"**Fremtidig handling:** {doc.get('future_action', 'N/A')}")
-            if tags_val:  # Use processed_tags which is guaranteed to be a list
+            if tags_val:
                 if processed_tags:
                     st.write(f"**Tags for mødet generelt:** {', '.join(processed_tags)}")
-                else:  # If tags_val was present but resulted in empty processed_tags (e.g. empty string)
+                else:
                     st.write(f"**Tags for mødet generelt:** Ingen gyldige tags")
-            else:  # If tags_val was None or empty list initially
+            else:
                 st.write(f"**Tags for mødet generelt:** Ingen tags")
 
             st.write(f"**Beslutning truffet:** {'Ja' if decided else 'Nej'}")
@@ -569,7 +560,7 @@ def main():
 
         st.subheader("Indtast dit søgeord her:")
         query_main = st.text_input(
-            "Søg efter et emne (f.eks. 'budget', 'lokalplan', ...):",  # Shortened for brevity
+            "Søg efter et emne (f.eks. 'budget', 'lokalplan', ...):",
             st.session_state.search_query_app,
             key="main_query_input"
         )
@@ -590,20 +581,7 @@ def main():
                     st.error(f"Der opstod en fejl under søgningen: {e}")
         else:
             if st.session_state.search_initiated:
-                # This part is tricky. For simplicity, we might need to re-run search
-                # or store results in session_state if we want them to persist without
-                # clicking search again after filter changes.
-                # For now, showing empty until search is clicked.
-                # You could call do_search here again if filters in sidebar are meant to auto-trigger
-                # but that's more complex with Streamlit's execution model.
-                # The current show_results_in_cards will handle the display based on whether docs are passed.
-                # If no search has been initiated, it shows the initial message.
-                # If a search was initiated but button not clicked again, it might show previous results if stored,
-                # or an empty state if not.
-                # To ensure fresh results if sidebar filters change, user must click "Søg".
-                # To show "no results found for X" correctly, it relies on search_initiated and search_query_app.
-                # If search was initiated, but no docs found, show_results_in_cards will display this.
-                show_results_in_cards([], 0)  # Or pass stored results if available and appropriate
+                show_results_in_cards([], 0)
             else:
                 show_results_in_cards([], None)
 
@@ -635,7 +613,7 @@ def main():
                 if conn: conn.close()
 
         @st.cache_data(ttl=3600)
-        def fetch_categories_by_municipality_tab2():  # Not currently used in UI, but kept for potential future use
+        def fetch_categories_by_municipality_tab2():
             conn = get_db_connection()
             if not conn: return []
             try:
@@ -670,7 +648,7 @@ def main():
                     ORDER BY count DESC
                     LIMIT 30; 
                     """
-                    cur.execute(query, [selected_municipality])  # Parameter as a list
+                    cur.execute(query, [selected_municipality])
                     return cur.fetchall()
             except Exception as e:
                 st.error(f"Error fetching categories for {selected_municipality}: {e}")
