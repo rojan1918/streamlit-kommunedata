@@ -451,7 +451,7 @@ def main():
 
         st.subheader("Indtast dit søgeord her:")
         query_main = st.text_input(
-            "Søg efter et emne (f.eks. 'budget', 'lokalplan', ...):",
+            "Søg efter et emne (f.eks. 'budget', 'lokalplan', 'fjernvarme', 'takster', 'ældreboliger', 'personalepolitik', 'udbuds', 'klimatilpasning', 'whistleblower', 'daginstitution', 'anlægsbevilling', 'garantistillelse', ...):",
             st.session_state.search_query_app,
             key="main_query_input"
         )
