@@ -70,206 +70,147 @@ def refresh_materialized_view():
 
 def do_search(query_text="", municipality=None, start_date=None, end_date=None, limit=20):
     """
-    Perform full-text search using PostgreSQL, with SQL logic based on the user's original script.
+    Perform full-text search using PostgreSQL
     """
-    conn = get_db_connection()
-    if not conn:
-        return [], 0
-
-    results = []
-    total_count = 0
-
-    # Ensure query_text is not None for SQL functions
-    safe_query_text = query_text if query_text else ""
-
     try:
-        with conn.cursor() as cur:
-            # Build the query based on the original script's structure
-            # Base query structure
-            query_sql = """
-                SELECT  
-                    t.id, t.municipality, t.date, t.participants, t.guests, t.title,  
-                    t.summary, t.tags, t.content_url, t.category, t.search_sentences,
-                    t.decided_or_not, t.future_action, t.description, t.subject_title, t.amount,
-                    COALESCE(ts_rank_score, 0) as ts_rank_score,
-                    COALESCE(similarity_score, 0) as similarity_score
-                FROM (
-                    SELECT  
-                        *,
-                        ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
-                        similarity(
-                            ((((((((COALESCE(municipality, '')::text || ' ') ||  
-                            COALESCE(title, '')::text) || ' ') ||  
-                            COALESCE(category, '')::text) || ' ') ||  
-                            COALESCE(description, '')::text) || ' ') ||  
-                            COALESCE(future_action, '')::text) || ' ') ||  
-                            COALESCE(subject_title, '')::text),
-                            %s 
-                        ) as similarity_score
-                    FROM sourceview.foraisearch_with_search
-                ) t
-                WHERE 
-            """
-            params_list = [safe_query_text, safe_query_text]  # Initial params for the subquery
+        conn = get_db_connection()
+        cur = conn.cursor()
 
-            # Add wildcard search for even better matches
-            wildcard_query_parts = [f"{word}:*" for word in safe_query_text.split() if word]
-            wildcard_query = " | ".join(wildcard_query_parts) if wildcard_query_parts else ""
+        # Build the query
+        query = """
+                    SELECT 
+                        t.id, t.municipality, t.date, t.participants, t.guests, t.title, 
+                        t.summary, t.tags, t.content_url, t.category, t.search_sentences,
+                        t.decided_or_not, t.future_action, t.description, t.subject_title, t.amount,
+                        COALESCE(ts_rank_score, 0) as ts_rank_score,
+                        COALESCE(similarity_score, 0) as similarity_score
+                    FROM (
+                        SELECT 
+                            *,
+                            ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
+                            similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            ) as similarity_score
+                        FROM sourceview.foraisearch_with_search
+                    ) t
+                    WHERE """
 
-            # Add conditions - both exact matches and similarity
-            # These are for the WHERE clause
-            where_conditions_sql_parts = []
-            where_params_list_for_main_query = []
+        params = [query_text, query_text]
 
-            if safe_query_text:  # Only add text search conditions if query_text is provided
-                where_conditions_sql_parts.extend([
-                    "t.search_vector @@ plainto_tsquery('danish', %s)",
-                    "t.similarity_score > 0.05"  # No parameter for this part
-                ])
-                where_params_list_for_main_query.append(safe_query_text)  # For plainto_tsquery
+        # Add wildcard search for even better matches
+        wildcard_query = " | ".join([f"{word}:*" for word in query_text.split()])
 
-                if wildcard_query:
-                    where_conditions_sql_parts.append("t.search_vector @@ to_tsquery('danish', %s)")
-                    where_params_list_for_main_query.append(wildcard_query)  # For to_tsquery
+        # Add conditions - both exact matches and similarity
+        where_conditions = [
+            "t.search_vector @@ plainto_tsquery('danish', %s)",
+            "t.search_vector @@ to_tsquery('danish', %s)",
+            "t.similarity_score > 0.05"  # Adjust threshold as needed
+        ]
 
-            if not where_conditions_sql_parts:  # No text search query
-                if municipality and municipality != "Alle":
-                    query_sql += " 1=1 "  # If only municipality filter, start with a true condition
-                else:
-                    query_sql += " 1=0 "  # No search text and no specific municipality filter, return nothing
-            else:
-                query_sql += " (" + " OR ".join(where_conditions_sql_parts) + ") "
+        query += " OR ".join(where_conditions)
+        params.extend([query_text, wildcard_query])
 
-            # Combine initial params with WHERE params
-            current_params_for_main_query = params_list + where_params_list_for_main_query
+        # Add filters
+        if municipality and municipality != "Alle":
+            query += " AND municipality = %s"
+            params.append(municipality)
 
-            # Add filters
-            if municipality and municipality != "Alle":
-                query_sql += " AND municipality = %s"
-                current_params_for_main_query.append(municipality)
+        if start_date:
+            query += " AND date::date >= %s"
+            params.append(start_date)
+
+        if end_date:
+            query += " AND date::date <= %s"
+            params.append(end_date)
+        # if start_date:
+        #     query += " AND date::date >= %s"
+        #     params.append(start_date)
+        #
+        # if end_date:
+        #     query += " AND date::date <= %s"
+        #     params.append(end_date)
 
             # Add ordering and limit
-            orderby_params_list = []
-            if safe_query_text:  # Only order by rank/similarity if there's a query text
-                query_sql += """
-                ORDER BY ((ts_rank(search_vector, plainto_tsquery('danish', %s))) + (similarity(
-                                (((((((((COALESCE(municipality, '')::text || ' ') ||  
-                                COALESCE(title, '')::text) || ' ') ||  
-                                COALESCE(category, '')::text) || ' ') ||  
-                                COALESCE(description, '')::text) || ' ') ||  
-                                COALESCE(future_action, '')::text) || ' ') ||  
-                                COALESCE(subject_title, '')::text),
-                                %s 
-                            )) * 0.8) DESC 
-                """
-                orderby_params_list.extend([safe_query_text, safe_query_text])
-            else:  # Default order if no search text (e.g., by date)
-                query_sql += " ORDER BY date DESC NULLS LAST "
-
-            current_params_for_main_query.extend(orderby_params_list)
-
-            query_sql += " LIMIT %s"
-            current_params_for_main_query.append(limit)
-
-            # --- DEBUGGING PRINTS ---
-            print("--- MAIN QUERY SQL (Original Logic Style) ---")
-            print(query_sql)
-            print("--- MAIN QUERY PARAMS LIST (current_params_for_main_query) ---")
-            print(current_params_for_main_query)
-            try:
-                print("--- MAIN QUERY CUR.Mogrify() ---")
-                print(cur.mogrify(query_sql, tuple(current_params_for_main_query)).decode(conn.encoding))
-            except Exception as e_mogrify:
-                print(f"Error during mogrify: {e_mogrify}")
-            # --- END DEBUGGING PRINTS ---
-
-            cur.execute(query_sql, tuple(current_params_for_main_query))
-            results = cur.fetchall()
-
-            # Count query for total matches
-            # This also needs to be structured like the original script's count query
-            count_query_sql = """
-                SELECT COUNT(*)  
-                FROM (
-                    SELECT  
-                        *,
-                        ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
-                        similarity(
-                            ((((((((COALESCE(municipality, '')::text || ' ') ||  
-                            COALESCE(title, '')::text) || ' ') ||  
-                            COALESCE(category, '')::text) || ' ') ||  
-                            COALESCE(description, '')::text) || ' ') ||  
-                            COALESCE(future_action, '')::text) || ' ') ||  
-                            COALESCE(subject_title, '')::text),
-                            %s
-                        ) as similarity_score
-                    FROM sourceview.foraisearch_with_search
-                ) t
-                WHERE 
+            query += """
+            ORDER BY ((ts_rank(search_vector, plainto_tsquery('danish', %s))) + (similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            )) * 0.8) DESC LIMIT %s
             """
-            # Parameters for the subquery part of the COUNT query
-            count_params_list_for_subquery = [safe_query_text, safe_query_text]
+            params.append(limit)
 
-            # WHERE conditions for the count query
-            count_where_conditions_sql_parts = []
-            count_where_params_list = []
+        # Execute search
+        cur.execute(query, params)
+        results = cur.fetchall()
 
-            if safe_query_text:
-                count_where_conditions_sql_parts.extend([
-                    "t.search_vector @@ plainto_tsquery('danish', %s)",
-                    "t.similarity_score > 0.05"
-                ])
-                count_where_params_list.append(safe_query_text)
+        # Count query for total matches
+        count_query = """
+                    SELECT COUNT(*) 
+                    FROM (
+                        SELECT 
+                            *,
+                            ts_rank(search_vector, plainto_tsquery('danish', %s)) as ts_rank_score,
+                            similarity(
+                                (((((((((COALESCE(municipality, '')::text || ' ') || 
+                                COALESCE(title, '')::text) || ' ') || 
+                                COALESCE(category, '')::text) || ' ') || 
+                                COALESCE(description, '')::text) || ' ') || 
+                                COALESCE(future_action, '')::text) || ' ') || 
+                                COALESCE(subject_title, '')::text,
+                                %s
+                            ) as similarity_score
+                        FROM sourceview.foraisearch_with_search
+                    ) t
+                    WHERE """
 
-                if wildcard_query:
-                    count_where_conditions_sql_parts.append("t.search_vector @@ to_tsquery('danish', %s)")
-                    count_where_params_list.append(wildcard_query)
+        count_params = [query_text, query_text]
 
-            if not count_where_conditions_sql_parts:
-                if municipality and municipality != "Alle":
-                    count_query_sql += " 1=1 "
-                else:
-                    count_query_sql += " 1=0 "
-            else:
-                count_query_sql += " (" + " OR ".join(count_where_conditions_sql_parts) + ") "
+        count_query += " OR ".join(where_conditions)
+        count_params.extend([query_text, wildcard_query])
 
-            final_count_params_list = count_params_list_for_subquery + count_where_params_list
+        if municipality and municipality != "Alle":
+            count_query += " AND municipality = %s"
+            count_params.append(municipality)
 
-            if municipality and municipality != "Alle":
-                count_query_sql += " AND municipality = %s"
-                final_count_params_list.append(municipality)
+        if start_date:
+            count_query += " AND date::date >= %s"
+            count_params.append(start_date)
 
-            # --- DEBUGGING PRINTS FOR COUNT QUERY ---
-            print("--- COUNT QUERY SQL (Original Logic Style) ---")
-            print(count_query_sql)
-            print("--- COUNT QUERY PARAMS LIST (final_count_params_list) ---")
-            print(final_count_params_list)
-            try:
-                print("--- COUNT QUERY CUR.Mogrify() ---")
-                print(cur.mogrify(count_query_sql, tuple(final_count_params_list)).decode(conn.encoding))
-            except Exception as e_mogrify_count:
-                print(f"Error during count mogrify: {e_mogrify_count}")
-            # --- END DEBUGGING PRINTS FOR COUNT QUERY ---
+        if end_date:
+            count_query += " AND date::date <= %s"
+            count_params.append(end_date)
+        # if start_date:
+        #     count_query += " AND date::date >= %s"
+        #     count_params.append(start_date)
+        #
+        # if end_date:
+        #     count_query += " AND date::date <= %s"
+        #     count_params.append(end_date)
 
-            cur.execute(count_query_sql, tuple(final_count_params_list))
-            count_result = cur.fetchone()
-            if count_result:
-                total_count = count_result['count']
-            else:
-                total_count = 0
+        cur.execute(count_query, count_params)
+        total_count = cur.fetchone()['count']
 
-    except psycopg2.Error as db_err:
-        st.error(f"Database search error: {db_err}")
-        print(f"Database error: {db_err}")
-        return [], 0
+        return results, total_count
+
     except Exception as e:
-        st.error(f"General search error: {e}")
-        print(f"General error in do_search: {e}")
+        st.error(f"Search error: {e}")
         return [], 0
     finally:
-        if conn:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
             conn.close()
-    return results, total_count
 
 
 # Placeholder for the rest of the functions from the previous complete script:
