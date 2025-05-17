@@ -200,104 +200,68 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
 
 def show_results_in_cards(docs, total_count=None):
     """
-    Viser en liste over dokumenter i Streamlit UI ved hjælp af et kortlayout.
-    Uses html.escape() for safely displaying text.
+    Viser en liste over dokumenter i Streamlit UI samt relaterede artikler.
     """
-    current_query = st.session_state.get('search_query_app', "")
-
     if total_count is not None:
         st.write(f"**Antal resultater:** {total_count}")
-        if total_count == 0 and current_query:
-            st.info(
-                f"Ingen resultater fundet for '{html.escape(current_query)}'. Prøv et andet søgeord eller juster dine filtre.")
-        elif total_count == 0 and not current_query and st.session_state.get('search_initiated', False):
-            st.info("Ingen resultater at vise. Indtast venligst et søgeord for at starte en søgning.")
 
-    if not docs and total_count == 0 and not current_query and not st.session_state.get('search_initiated', False):
-        st.markdown(
-            "<p style='text-align: center; color: #777; margin-top: 20px;'><i>Brug søgefeltet og filtrene i sidebaren for at finde mødereferater.</i></p>",
-            unsafe_allow_html=True)
-
-    for i, doc in enumerate(docs):
+    for doc in docs:
         date_val = doc.get("date", "")
+
+        # Konverter datoformat til YYYY-MM-DD
+        # With this:
         if date_val:
             if isinstance(date_val, str):
-                try:
-                    date_val = date_val.split("T")[0]
-                except:
-                    pass
-            elif hasattr(date_val, 'strftime'):
+                date_val = date_val.split("T")[0]
+            else:
                 date_val = date_val.strftime("%Y-%m-%d")
 
-        municipality_val = doc.get("municipality", "N/A")
-        subject_title_val = doc.get("subject_title", "Ingen emnetitel")
-        summary_val = doc.get("summary", "Intet resumé tilgængeligt.")
-        content_url = doc.get("content_url", "#")
-        tags_val = doc.get("tags", [])
+        municipality_val = doc.get("municipality", "")
+        summary_val = doc.get("summary", "")
         decided = doc.get("decided_or_not", False)
-        amount = str(doc.get("amount", ""))  # Ensure amount is a string for escaping
+        content_url = doc.get("content_url", "#")
+        amount = doc.get("amount", "")
+        search_sentences_val = doc.get("search_sentences", "")
+        subject_title_val = doc.get("subject_title", "")
+        description_val = doc.get("description", "")
+        future_action_val = doc.get("future_action", "")
+        tags_val = doc.get("tags", [])
+        category_val = doc.get("category", "Ingen kategori")
+        base_url = doc.get("site", "")
 
-        max_summary_length = 250
-        display_summary = summary_val
-        if summary_val and len(summary_val) > max_summary_length:
-            display_summary = summary_val[:max_summary_length] + "..."
+        # # Hent relaterede artikler
+        # articles = scrape_articles(f"{subject_title_val} {municipality_val}")
 
-        # Use html.escape() for all dynamic string content injected into HTML
-        card_content = f"""
-        <div class="result-card">
-            <h3>{html.escape(subject_title_val)}</h3>
-            <p class="meta-info">
-                <strong>Kommune:</strong> {html.escape(municipality_val)} | 
-                <strong>Dato:</strong> {html.escape(str(date_val)) or 'Ukendt'} |
-                <strong>Beslutning truffet:</strong> {'Ja' if decided else 'Nej'}
-                {f"| <strong>Bevilliget beløb:</strong> {html.escape(amount)} DKK" if amount else ""}
-            </p>
-            <p>{html.escape(display_summary)}</p>
-        """
-
-        processed_tags = []
-        if tags_val:
-            tags_html_parts = ["<div class='tags'>"]
-            if isinstance(tags_val, str):
-                processed_tags = [tag.strip() for tag in tags_val.split(',') if tag.strip()]
-            elif isinstance(tags_val, list):
-                processed_tags = [str(tag) for tag in tags_val if tag]
-
-            for tag in processed_tags:
-                tags_html_parts.append(f"<span>{html.escape(tag)}</span>")
-            tags_html_parts.append("</div>")
-            card_content += "".join(tags_html_parts)
-
-        if content_url and content_url != "#":
-            card_content += f"""
-            <p style="margin-top: 15px;">
-                <a href="{html.escape(content_url)}" target="_blank">📄 Se hele dokumentet</a>
-            </p>
-            """
-
-        card_content += "</div>"
-        st.markdown(card_content, unsafe_allow_html=True)
-
-        with st.expander(f"Se flere detaljer for: \"{html.escape(subject_title_val[:50])}...\""):
+        with st.expander(f"📌 {municipality_val} ({date_val})"):
             st.write(f"**Kommune:** {municipality_val}")
-            st.write(f"**Fuld Resumé:** {summary_val}")
+            st.write(f"**Resumé:** {summary_val}")
             st.write(f"**Emnetitel:** {subject_title_val}")
-            st.write(f"**Emnebeskrivelse:** {doc.get('description', 'N/A')}")
-            st.write(f"**Fremtidig handling:** {doc.get('future_action', 'N/A')}")
+            st.write(f"**Emnebeskrivelse:** {description_val}")
+            st.write(f"**Fremtidig handling:** {future_action_val}")
             if tags_val:
-                if processed_tags:  # Use the already processed list of tags
-                    st.write(f"**Tags for mødet generelt:** {', '.join(processed_tags)}")
+                if isinstance(tags_val, list):
+                    st.write(f"**Tags for mødet generelt:** {', '.join(tags_val)}")
                 else:
-                    st.write(f"**Tags for mødet generelt:** Ingen gyldige tags")
-            else:
-                st.write(f"**Tags for mødet generelt:** Ingen tags")
+                    st.write(f"**Tags for mødet generelt:** {tags_val}")
 
             st.write(f"**Beslutning truffet:** {'Ja' if decided else 'Nej'}")
-            if amount:  # Use the string version of amount
+            if amount:
                 st.write(f"**Bevilliget beløb:** {amount} DKK")
-            st.write(f"**Søgesætninger til dokumentet:** {doc.get('search_sentences', 'N/A')}")
-            if content_url and content_url != "#":
-                st.markdown(f"[📄 **Se hele dokumentet (igen)**]({content_url})")
+
+            st.write(f"**Søgesætninger til dokumentet:** {search_sentences_val}")
+
+            if content_url != "#":
+                st.markdown(f"[📄 **Se hele dokumentet**]({content_url})")
+
+            # # Vis relaterede artikler
+            # st.markdown("#### 🔗 Relaterede artikler")
+            # valid_articles = [(title, link) for title, link, _ in articles if title.strip() and link.strip()]
+            #
+            # if valid_articles:
+            #     for article_title, article_link in valid_articles:
+            #         st.markdown(f"- **[{article_title}]({article_link})**")
+            # else:
+            #     st.write("Ingen relaterede artikler fundet.")
 
 
 def add_enhanced_custom_css():
