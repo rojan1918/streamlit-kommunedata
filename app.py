@@ -2,9 +2,14 @@ import streamlit as st
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from collections import Counter, defaultdict
 import pandas as pd
 import altair as alt
+# from duckduckgo_search import DDGS
 import time
+import random
+
+# from datetime import datetime
 
 # =====================
 # Database Settings
@@ -18,37 +23,71 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 
 def get_db_connection():
     """Create database connection"""
-    try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            cursor_factory=RealDictCursor
-        )
-        return conn
-    except Exception as e:
-        st.error(f"Database connection error: {e}. Please check your environment variables and database status.")
-        return None
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        cursor_factory=RealDictCursor
+    )
 
+
+# =====================
+# Web Scraping Funktion
+# =====================
+# def scrape_articles(query, count=3, max_retries=3):
+#     """
+#     Søger på DuckDuckGo efter relevante nyhedsartikler og håndterer rate limits.
+#     Implementerer en tilbageholdelsesstrategi for at undgå blokeringer.
+#     """
+#     results = []
+#     attempt = 0
+#     delay = 2  # Startforsinkelse i sekunder
+#
+#     while attempt < max_retries:
+#         try:
+#             with DDGS() as ddgs:
+#                 search_results = ddgs.text(query, max_results=count)
+#
+#                 for result in search_results:
+#                     title = result["title"]
+#                     url = result["href"]
+#                     snippet = result["body"]
+#                     results.append((title, url, snippet))
+#
+#                 break  # Afslutter loopet ved succes
+#
+#         except Exception as e:
+#             print(f"⚠️ Fejl ved søgning: {e}")
+#             attempt += 1
+#             time.sleep(delay)
+#             delay *= 2
+#
+#             if attempt == max_retries:
+#                 print("❌ Maksimale antal forsøg nået. Returnerer tom liste.")
+#                 return []
+#
+#     time.sleep(random.uniform(1, 3))
+#
+#     return results
 
 # =====================
 # Søgefunktionalitet
 # =====================
 def refresh_materialized_view():
     """Refresh the materialized view"""
-    conn = get_db_connection()
-    if not conn:
-        return
     try:
-        with conn.cursor() as cur:
-            cur.execute("REFRESH MATERIALIZED VIEW sourceview.foraisearch_with_search")
-            conn.commit()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("REFRESH MATERIALIZED VIEW sourceview.foraisearch_with_search")
+        conn.commit()
     except Exception as e:
         st.error(f"Error refreshing materialized view: {e}")
     finally:
-        if conn:
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
             conn.close()
 
 
@@ -105,20 +144,13 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             query += " AND municipality = %s"
             params.append(municipality)
 
-        if start_date:
-            query += " AND date::date >= %s"
-            params.append(start_date)
-
-        if end_date:
-            query += " AND date::date <= %s"
-            params.append(end_date)
-        # if start_date:
-        #     query += " AND date::date >= %s"
-        #     params.append(start_date)
-        #
-        # if end_date:
-        #     query += " AND date::date <= %s"
-        #     params.append(end_date)
+            # if start_date:
+            #     query += " AND date::date >= %s"
+            #     params.append(start_date)
+            #
+            # if end_date:
+            #     query += " AND date::date <= %s"
+            #     params.append(end_date)
 
             # Add ordering and limit
             query += """
@@ -167,13 +199,6 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             count_query += " AND municipality = %s"
             count_params.append(municipality)
 
-        if start_date:
-            count_query += " AND date::date >= %s"
-            count_params.append(start_date)
-
-        if end_date:
-            count_query += " AND date::date <= %s"
-            count_params.append(end_date)
         # if start_date:
         #     count_query += " AND date::date >= %s"
         #     count_params.append(start_date)
@@ -197,7 +222,7 @@ def do_search(query_text="", municipality=None, start_date=None, end_date=None, 
             conn.close()
 
 
-def show_results_in_cards(docs, total_count=None):
+def show_results(docs, total_count=None):
     """
     Viser en liste over dokumenter i Streamlit UI samt relaterede artikler.
     """
@@ -263,358 +288,328 @@ def show_results_in_cards(docs, total_count=None):
             #     st.write("Ingen relaterede artikler fundet.")
 
 
-def add_enhanced_custom_css():
-    """Adds enhanced custom CSS to the Streamlit app for styling."""
+def add_custom_css():
+    # Create custom CSS for input field styling
     custom_css = """
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-            html, body, [class*="st-"], .stTextInput input, .stSelectbox select, .stDateInput input {
-               font-family: 'Inter', sans-serif !important;
+            /* Target the Streamlit text input, selectbox, and date input fields */
+            .stTextInput input, .stSelectbox select, .stDateInput input {
+                border: 2px solid #4e89ae !important;  /* Add a blue border */
+                border-radius: 5px !important;         /* Rounded corners */
+                padding: 10px !important;              /* More padding for better visibility */
+                box-shadow: 0 0 5px rgba(78, 137, 174, 0.2) !important;  /* Subtle shadow */
             }
-            .stTextInput input, .stSelectbox div[data-baseweb="select"] > div, .stDateInput input { 
-                border: 1px solid #D0D5DD !important; 
-                border-radius: 8px !important;        
-                padding: 10px 12px !important;       
-                box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
-                transition: border-color 0.2s ease, box-shadow 0.2s ease;
-            }
-            .stTextInput input:focus, .stSelectbox div[data-baseweb="select"] > div:focus-within, .stDateInput input:focus { 
-                border-color: #4A90E2 !important; 
-                box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.2) !important; 
-            }
-            .stButton>button {
-                border: none !important;
-                border-radius: 8px !important;
-                color: white !important;
-                background-color: #4A90E2 !important; 
-                padding: 10px 18px !important; 
-                font-weight: 500 !important;
-                font-size: 0.95rem !important; 
-                transition: background-color 0.2s ease, transform 0.1s ease;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
-            }
-            .stButton>button:hover {
-                background-color: #357ABD !important; 
-                transform: translateY(-1px); 
-            }
-            .stButton>button:active {
-                background-color: #2A6496 !important; 
-                transform: translateY(0px);
-            }
-            .stExpanderHeader {
-                font-size: 0.95em !important; 
-                font-weight: 500 !important; 
-                color: #4B5563 !important; 
-            }
-            .stExpander {
-                border: 1px solid #EAECEF !important;
-                border-radius: 8px !important;
-                background-color: #FFFFFF !important; 
-                box-shadow: 0 1px 2px rgba(0,0,0,0.03); 
-                margin-bottom: 0.75rem; 
-            }
-            .result-card {
-                border: 1px solid #E0E4E7; 
-                border-radius: 10px;
-                padding: 18px; 
-                margin-bottom: 18px; 
-                background-color: #FFFFFF; 
-                box-shadow: 0 2px 4px rgba(0,0,0,0.04); 
-                transition: box-shadow 0.2s ease-in-out;
-            }
-            .result-card:hover {
-                box-shadow: 0 5px 10px rgba(0,0,0,0.06); 
-            }
-            .result-card h3 { 
-                margin-top: 0;
-                margin-bottom: 8px; 
-                color: #4A90E2; 
-                font-size: 1.15rem; 
-                font-weight: 600;
-            }
-            .result-card p {
-                margin-bottom: 6px; 
-                line-height: 1.55;
-                color: #374151; 
-                font-size: 0.9rem;
-            }
-            .result-card .meta-info { 
-                font-size: 0.85rem;
-                color: #6B7280;
-                margin-bottom: 12px;
-            }
-            .result-card .tags span {
-                background-color: #E0E7FF; 
-                color: #3730A3; 
-                padding: 3px 7px; 
-                border-radius: 12px; 
-                font-size: 0.75rem; 
-                margin-right: 5px;
-                display: inline-block;
-                margin-bottom: 5px;
-                font-weight: 500;
-            }
-            .result-card a {
-                color: #357ABD; 
-                text-decoration: none;
-                font-weight: 500;
-            }
-            .result-card a:hover {
-                text-decoration: underline;
-            }
-            button[data-baseweb="tab"] { 
-                font-size: 1rem !important;
-                padding: 10px 18px !important;
-                font-weight: 500 !important;
-                color: #4B5563 !important; 
-                border-bottom: 2px solid transparent !important; 
-                transition: color 0.2s ease, border-color 0.2s ease;
-            }
-            button[data-baseweb="tab"][aria-selected="true"] {
-                color: #4A90E2 !important; 
-                border-bottom: 2px solid #4A90E2 !important; 
-                font-weight: 600 !important;
-            }
-            .stApp {
-                 background-color: #F0F2F6; 
-            }
-            .stSidebar {
-                background-color: #FFFFFF; 
-                padding: 1rem;
-            }
-            .stSidebar .stheader { 
-                font-size: 1.2rem;
-                color: #4A90E2;
+
+            /* Hover effect for better user experience */
+            .stTextInput input:hover, .stSelectbox select:hover, .stDateInput input:hover {
+                border-color: #2c699a !important;      /* Darker blue on hover */
+                box-shadow: 0 0 8px rgba(78, 137, 174, 0.4) !important;  /* Enhanced shadow */
             }
         </style>
     """
+    # Inject the CSS into the Streamlit app
     st.markdown(custom_css, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=3600)
-def get_municipalities_list():
-    """Fetches and caches the list of unique municipalities."""
-    conn = get_db_connection()
-    if not conn:
-        return ["Alle"]
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT municipality FROM sourceview.foraisearch_with_search WHERE municipality IS NOT NULL ORDER BY municipality")
-            municipalities = ["Alle"] + [row['municipality'] for row in cur.fetchall()]
-            return municipalities
-    except Exception as e:
-        st.error(f"Error fetching municipalities: {e}")
-        return ["Alle"]
-    finally:
-        if conn:
-            conn.close()
-
-
+# =====================
+# Main App
+# =====================
 def main():
+    # =====================
+    # Streamlit Page Config
+    # =====================
     st.set_page_config(page_title="Kommunale Mødeudtræk", layout="wide")
-    add_enhanced_custom_css()
 
-    if 'search_query_app' not in st.session_state:
-        st.session_state.search_query_app = ""
-    if 'search_initiated' not in st.session_state:
-        st.session_state.search_initiated = False
+    # Add custom CSS for styling input fields
+    add_custom_css()
 
     st.title("🔍 Kommunale Mødeudtræk")
+
+    # Opret faner til navigation
     tab1, tab2 = st.tabs(["Søg i kommunale møder", "Populære emner"])
 
-    with st.sidebar:
-        st.header("🛠️ Filter Indstillinger")
-        municipalities = get_municipalities_list()
-        municipality_filter_sidebar = st.selectbox(
-            "Filtrér efter kommune:",
-            municipalities,
-            key="sidebar_municipality_filter"
-        )
-        st.markdown("---")
-        st.markdown("App udviklet til at øge gennemsigtigheden i kommunale beslutninger.")
-
+    # =====================
+    # Hovedsøgefunktion
+    # =====================
     with tab1:
         with st.expander("### ℹ️ Sådan bruger du appen (Klik for at se mere)"):
             st.markdown("""
                 Denne **Kommunale Mødeudtræk** app gør det nemt at **søge og udforske kommunale mødereferater** fra forskellige danske kommuner.
 
                 ### 🔍 **Sådan bruger du appen:**
-                1️⃣ **Indtast søgeord** i feltet nedenfor (f.eks. *"bolig"*, *"budget"*, *"miljø"*).  
-                2️⃣ **Vælg filtre** i menuen til venstre (kommune, evt. dato).  
-                3️⃣ Klik på **"🔎 Søg"** for at finde relevante møder.  
-                4️⃣ **Gennemse resultaterne** som vises i kortformat. Klik på et kort for at se flere detaljer. 
-                5️⃣ Klik på **"Se hele dokumentet"** for at læse originalreferatet.  
+                1️⃣ **Søg i kommunale møder**  
+                   - Indtast et søgeord (f.eks. *"bolig"*, *"budget"*, *"miljø"*).  
+                   - Filtrér på **kommune** og **dato** efter behov.  
+                   - Klik på **"🔎 Søg"** for at finde relevante møder.  
+
+                2️⃣ **Gennemse resultaterne**  
+                   - Klik på **📌** for at udvide og se detaljer om et møde.  
+                   - Se **resumé, emne, beslutninger og fremtidige handlinger**.  
+                   - Klik på **"Se hele dokumentet"** for at læse originalreferatet.  
+
+                3️⃣ **Relaterede nyhedsartikler**  
+                   - Appen søger automatisk efter **relevante artikler** baseret på emnet.  
+                   - Klik på de viste links for at læse mere.  
+
+                4️⃣ **Populære emner**  
+                   - Under fanen **"Populære emner"** kan du se **hvilke emner der diskuteres mest** i kommunerne.  
 
                 📌 **Formål:** Øget gennemsigtighed i kommunale beslutninger og let adgang til information om lokalpolitik.
             """)
 
-        st.subheader("Indtast dit søgeord her:")
-        query_main = st.text_input(
-            "Søg efter et emne (f.eks. 'budget', 'lokalplan', 'fjernvarme', 'takster', 'ældreboliger', 'personalepolitik', 'udbuds', 'klimatilpasning', 'whistleblower', 'daginstitution', 'anlægsbevilling', 'garantistillelse', ...):",
-            st.session_state.search_query_app,
-            key="main_query_input"
-        )
+        st.subheader("Søg i kommunale møder")
 
-        if st.button("🔎 Søg", key="search_button"):
-            st.session_state.search_query_app = query_main
-            st.session_state.search_initiated = True
+        query = st.text_input(
+            "Søg efter et emne (f.eks. 'budget', 'lokalplan', 'fjernvarme', 'takster', 'ældreboliger', 'personalepolitik', 'udbuds', 'klimatilpasning', 'whistleblower', 'daginstitution', 'anlægsbevilling', 'garantistillelse'):",
+            "")
+        # Get unique municipalities from database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT municipality FROM sourceview.foraisearch_with_search ORDER BY municipality")
+        municipalities = ["Alle"] + [row['municipality'] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
 
+        municipality_filter = st.selectbox("Filtrér efter kommune:", municipalities)
+
+        # col1, col2 = st.columns(2)
+        # with col1:
+        #     start_date = st.date_input("Startdato", value=None)
+        # with col2:
+        #     end_date = st.date_input("Slutdato", value=None)
+
+        filter_clauses = []
+        if municipality_filter != "Alle":
+            filter_clauses.append(f"municipality eq '{municipality_filter}'")
+
+        # if start_date and end_date:
+        #     filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z and date le {end_date.isoformat()}T23:59:59Z")
+        # elif start_date:
+        #     filter_clauses.append(f"date ge {start_date.isoformat()}T00:00:00Z")
+        # elif end_date:
+        #     filter_clauses.append(f"date le {end_date.isoformat()}T23:59:59Z")
+
+        filter_query = " and ".join(filter_clauses) if filter_clauses else None
+
+        if st.button("🔎 Søg"):
             with st.spinner("Søger..."):
                 try:
-                    # refresh_materialized_view() # Optional, can be slow
+                    # Refresh materialized view before searching
+                    refresh_materialized_view()
+                    # Perform search
                     docs, total_count = do_search(
-                        query_text=st.session_state.search_query_app,
-                        municipality=municipality_filter_sidebar,
+                        query_text=query,
+                        municipality=municipality_filter,
+                        # start_date=start_date,
+                        # end_date=end_date
                     )
-                    show_results_in_cards(docs, total_count)
-                except Exception as e:  # Catch general exceptions from do_search or show_results
-                    st.error(f"Der opstod en fejl under søgningen: {e}")
-                    print(f"Error in search button logic: {e}")  # Also print to console
-        else:
-            if st.session_state.search_initiated:
-                # This logic might need refinement if you want to show stale results
-                # For now, it clears results if search button isn't clicked again
-                show_results_in_cards([], 0)
-            else:
-                show_results_in_cards([], None)
+                    show_results(docs, total_count)
+                except Exception as e:
+                    st.error(f"Der opstod en fejl: {e}")
 
         st.markdown("---")
 
+    # =====================
+    # Sektion for Populære Emner
+    # =====================
     with tab2:
-        st.subheader("📊 Populære Emner")
+        st.subheader("Populære Emner")
 
-        @st.cache_data(ttl=3600)
-        def fetch_all_categories_tab2():
-            conn = get_db_connection()
-            if not conn: return []
+        def fetch_all_categories():
+            """
+            Fetch category data from PostgreSQL
+            """
             try:
-                with conn.cursor() as cur:
-                    query = """
-                    SELECT category, COUNT(*) as count
-                    FROM sourceview.foraisearch_with_search
-                    WHERE category IS NOT NULL AND TRIM(category) <> ''
-                    GROUP BY category
-                    ORDER BY count DESC
-                    LIMIT 30; 
-                    """
-                    cur.execute(query)
-                    return cur.fetchall()
+                conn = get_db_connection()
+                cur = conn.cursor()
+
+                query = """
+                SELECT 
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                """
+
+                cur.execute(query)
+                results = cur.fetchall()
+                return results
             except Exception as e:
-                st.error(f"Error fetching all categories: {e}")
+                st.error(f"Error fetching categories: {e}")
                 return []
             finally:
-                if conn: conn.close()
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
-        @st.cache_data(ttl=3600)
-        def fetch_categories_by_municipality_tab2():
-            conn = get_db_connection()
-            if not conn: return []
+        def fetch_categories_by_municipality():
+            """
+            Fetch category data grouped by municipality
+            """
             try:
-                with conn.cursor() as cur:
-                    query = """
-                    SELECT municipality, category, COUNT(*) as count
-                    FROM sourceview.foraisearch_with_search
-                    WHERE category IS NOT NULL AND TRIM(category) <> '' AND municipality IS NOT NULL
-                    GROUP BY municipality, category
-                    ORDER BY municipality, count DESC;
-                    """
-                    cur.execute(query)
-                    return cur.fetchall()
+                conn = get_db_connection()
+                cur = conn.cursor()
+
+                query = """
+                SELECT 
+                    municipality,
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE category IS NOT NULL
+                GROUP BY municipality, category
+                ORDER BY municipality, count DESC
+                """
+
+                cur.execute(query)
+                results = cur.fetchall()
+                return results
             except Exception as e:
-                st.error(f"Error fetching categories by municipality: {e}")
+                st.error(f"Error fetching municipality categories: {e}")
                 return []
             finally:
-                if conn: conn.close()
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
-        @st.cache_data(ttl=3600)
-        def fetch_municipality_categories_tab2(selected_municipality):
-            conn = get_db_connection()
-            if not conn: return []
+        def fetch_municipality_categories(municipality):
+            """
+            Fetch categories for a specific municipality
+            """
             try:
-                with conn.cursor() as cur:
-                    query = """
-                    SELECT category, COUNT(*) as count
-                    FROM sourceview.foraisearch_with_search
-                    WHERE municipality = %s
-                    AND category IS NOT NULL AND TRIM(category) <> ''
-                    GROUP BY category
-                    ORDER BY count DESC
-                    LIMIT 30; 
-                    """
-                    cur.execute(query, [selected_municipality])
-                    return cur.fetchall()
+                conn = get_db_connection()
+                cur = conn.cursor()
+
+                query = """
+                SELECT 
+                    category,
+                    COUNT(*) as count
+                FROM sourceview.foraisearch_with_search
+                WHERE municipality = %s
+                AND category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC
+                """
+
+                cur.execute(query, [municipality])
+                results = cur.fetchall()
+                return results
             except Exception as e:
-                st.error(f"Error fetching categories for {selected_municipality}: {e}")
+                st.error(f"Error fetching municipality categories: {e}")
                 return []
             finally:
-                if conn: conn.close()
+                if 'cur' in locals():
+                    cur.close()
+                if 'conn' in locals():
+                    conn.close()
 
-        def show_popular_categories_tab2():
-            st.header("Mest Diskuterede Kategorier (Alle Kommuner)")
-            categories_data = fetch_all_categories_tab2()
-            if categories_data:
-                df = pd.DataFrame(categories_data)
-                if not df.empty:
-                    chart = alt.Chart(df).mark_bar().encode(
-                        x=alt.X('count:Q', title='Antal Møder'),
-                        y=alt.Y('category:N', sort='-x', title='Kategori'),
-                        tooltip=['category', 'count']
-                    ).properties(
-                        title='Top Kategorier på tværs af alle kommuner'
-                    )
-                    st.altair_chart(chart, use_container_width=True)
-                    with st.expander("Se rådata (Top Kategorier)"):
-                        st.dataframe(df)
-                else:
-                    st.write("Ingen kategoridata fundet.")
+        def show_popular_categories():
+            """
+            Display overall category frequency
+            """
+            st.header("Populære Kategorier (Alle Kommuner)")
+            categories = fetch_all_categories()
+
+            if categories:
+                # Convert to DataFrame
+                df = pd.DataFrame(categories)
+
+                # Display table
+                st.dataframe(df)
+
+                # Create bar chart
+                st.bar_chart(df.set_index("category"))
             else:
-                st.write("Ingen kategorier fundet eller fejl ved hentning.")
+                st.write("Ingen kategorier fundet.")
 
-        def show_categories_for_single_municipality_tab2():
-            st.header("Kategorier for en Udvalgt Kommune")
-            municipalities_list_tab2 = get_municipalities_list()
-            if "Alle" in municipalities_list_tab2:
-                municipalities_list_tab2_filtered = [m for m in municipalities_list_tab2 if m != "Alle"]
+        def show_categories_by_municipality():
+            """
+            Display categories across municipalities
+            """
+            st.header("Kategorier efter Kommuner (Samlet Overblik)")
+            results = fetch_categories_by_municipality()
+
+            if results:
+                # Convert to DataFrame
+                df = pd.DataFrame(results)
+
+                # Create Altair chart
+                chart = alt.Chart(df).mark_bar().encode(
+                    x=alt.X("category:N", sort='-y'),
+                    y=alt.Y("count:Q"),
+                    color="municipality:N",
+                    tooltip=["municipality:N", "category:N", "count:Q"]
+                ).properties(
+                    width=600,
+                    height=400
+                )
+                st.altair_chart(chart, use_container_width=True)
             else:
-                municipalities_list_tab2_filtered = municipalities_list_tab2
+                st.write("Ingen data fundet.")
 
-            if not municipalities_list_tab2_filtered:
-                st.warning("Ingen kommuner fundet i databasen.")
-                return
+        def show_categories_for_single_municipality():
+            """
+            Display categories for a selected municipality
+            """
+            st.header("Kategorier for Udvalgte Kommuner")
 
-            selected_muni = st.selectbox("Vælg en kommune:", municipalities_list_tab2_filtered, key="tab2_muni_select")
+            # Get unique municipalities
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT municipality FROM sourceview.foraisearch_with_search ORDER BY municipality")
+            municipalities = ["Alle"] + [row['municipality'] for row in cur.fetchall()]
+            cur.close()
+            conn.close()
 
-            if selected_muni:
-                results = fetch_municipality_categories_tab2(selected_muni)
+            selected_muni = st.selectbox("Vælg en kommune:", municipalities)
+
+            if selected_muni != "Alle":
+                results = fetch_municipality_categories(selected_muni)
                 if results:
                     df = pd.DataFrame(results)
-                    if not df.empty:
-                        chart = alt.Chart(df).mark_bar().encode(
-                            x=alt.X("count:Q", title="Antal Møder"),
-                            y=alt.Y("category:N", sort='-x', title="Kategori"),
-                            tooltip=["category", "count"]
-                        ).properties(
-                            title=f"Top Kategorier i {selected_muni}"
-                        )
-                        st.altair_chart(chart, use_container_width=True)
-                        with st.expander(f"Se rådata for {selected_muni}"):
-                            st.dataframe(df)
-                    else:
-                        st.write(f"Ingen kategorier fundet for {selected_muni}.")
-                else:
-                    st.write(f"Ingen kategorier fundet for {selected_muni} eller fejl ved hentning.")
 
-        st.markdown("Her kan du få et overblik over, hvilke emner der oftest diskuteres i kommunale møder.")
-        st.markdown("---")
-        show_popular_categories_tab2()
-        st.markdown("---")
-        show_categories_for_single_municipality_tab2()
+                    # Show table
+                    st.dataframe(df)
+
+                    # Create bar chart
+                    chart = alt.Chart(df).mark_bar().encode(
+                        x=alt.X("count:Q", title="Antal"),
+                        y=alt.Y("category:N", sort='-x', title="Kategori"),
+                        tooltip=["category", "count"]
+                    ).properties(
+                        width=600,
+                        height=400
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                else:
+                    st.write("Ingen kategorier fundet for denne kommune.")
+
+        # Main function for tab 2
+        def popular_topics_app():
+            """
+            Main function for the Popular Topics tab
+            """
+            st.title("Overblik over Populære Emner")
+
+            # Show overall categories
+            show_popular_categories()
+            st.write("---")
+
+            # Show categories by municipality
+            show_categories_by_municipality()
+            st.write("---")
+
+            # Show categories for single municipality
+            show_categories_for_single_municipality()
+
+        popular_topics_app()
+
+        # st.write("This section is currently under development.")
 
 
 if __name__ == "__main__":
-    if not all([DB_NAME, DB_USER, DB_PASSWORD, DB_HOST]):
-        st.error(
-            "Database configuration is missing. Please set DB_NAME, DB_USER, DB_PASSWORD, and DB_HOST environment variables.")
-    else:
-        main()
+    main()
